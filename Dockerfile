@@ -15,16 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
-COPY pyproject.toml ./
-COPY README.md ./
+# Copy project files (src must be present, or the built wheel has no code)
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir build && \
-    pip install --no-cache-dir .
-
-# Copy application code
-COPY src/ ./
+# Install the package and its dependencies
+RUN pip install --no-cache-dir .
 
 # Create non-root user
 RUN useradd -m -u 1000 mcp && \

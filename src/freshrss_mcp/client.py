@@ -1,9 +1,8 @@
 """FreshRSS API client implementation."""
 
-import json
 import logging
 from typing import Dict, List, Optional, Any
-from urllib.parse import urljoin, quote, urlencode
+from urllib.parse import quote, urlencode
 from datetime import datetime
 
 import httpx
@@ -280,8 +279,13 @@ class FreshRSSClient:
         if include_target:
             params["it"] = include_target
         
-        # URL encode the stream ID and append to endpoint
-        encoded_stream = quote(stream_id, safe="")
+        # URL encode the stream ID and append to endpoint. For feed/<url>, FreshRSS
+        # matches REQUEST_URI against "/stream/contents/feed/<urlencoded>", so the
+        # slash after "feed" must stay literal.
+        if stream_id.startswith("feed/"):
+            encoded_stream = "feed/" + quote(stream_id[5:], safe="")
+        else:
+            encoded_stream = quote(stream_id, safe="")
         endpoint = f"reader/api/0/stream/contents/{encoded_stream}"
         
         response = await self._request("GET", endpoint, params=params)

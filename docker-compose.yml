@@ -9,7 +9,9 @@ services:
       - FRESHRSS_EMAIL=username
       - FRESHRSS_API_PASSWORD=pwd
     ports:
-      - "8000:8000"
+      # The MCP endpoint has no auth and holds your FreshRSS session: keep it on loopback
+      # unless something in front of it (reverse proxy with auth, VPN) controls access.
+      - "127.0.0.1:8000:8000"
     command: ["--http"]
     stdin_open: true
     tty: true

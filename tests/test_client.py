@@ -1,0 +1,25 @@
+"""Stream ID encoding sent to the greader API."""
+
+from freshrss_mcp.client import FreshRSSClient
+
+
+class FakeResponse:
+    def json(self):
+        return {}
+
+
+async def test_stream_id_encoding(monkeypatch):
+    client = FreshRSSClient("https://rss.example", "u", "p")
+    seen = []
+
+    async def fake_request(self, method, endpoint, params=None, **kw):
+        seen.append(endpoint)
+        return FakeResponse()
+
+    monkeypatch.setattr(FreshRSSClient, "_request", fake_request)
+    await client.get_stream_contents("feed/https://x.example/rss?q=a b&hl=en")
+    await client.get_stream_contents("user/-/label/Tech News")
+
+    # FreshRSS regex needs a literal "/stream/contents/feed/" before the encoded URL.
+    assert seen[0] == "reader/api/0/stream/contents/feed/https%3A%2F%2Fx.example%2Frss%3Fq%3Da%20b%26hl%3Den"
+    assert seen[1] == "reader/api/0/stream/contents/user%2F-%2Flabel%2FTech%20News"

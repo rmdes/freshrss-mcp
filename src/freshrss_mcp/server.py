@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from .client import FreshRSSClient, FreshRSSError, AuthenticationError
+from .client import FreshRSSClient, AuthenticationError
 
 # Load environment variables
 load_dotenv()
@@ -73,7 +73,7 @@ class AuthenticateParams(BaseModel):
 class GetArticlesParams(BaseModel):
     """Parameters for fetching articles."""
     folder: Optional[str] = Field(None, description="Folder/label name to filter by")
-    feed_url: Optional[str] = Field(None, description="Feed URL to filter by")
+    feed_url: Optional[str] = Field(None, description="Feed to filter by: feed URL or feed_id")
     show_read: bool = Field(False, description="Include read articles")
     starred_only: bool = Field(False, description="Show only starred articles")
     count: int = Field(50, description="Number of articles to fetch (max ~1000)")
@@ -101,7 +101,7 @@ class SubscribeParams(BaseModel):
 
 class UnsubscribeParams(BaseModel):
     """Parameters for unsubscribing from a feed."""
-    feed_url: str = Field(..., description="URL of the feed to unsubscribe from")
+    feed_url: str = Field(..., description="Feed to unsubscribe from: feed URL or feed_id")
 
 
 async def connect(name: str, cfg: Dict[str, str]) -> FreshRSSClient:
@@ -284,10 +284,10 @@ async def freshrss_list_subscriptions() -> Dict[str, Any]:
             folders = [cat.label for cat in sub.categories if cat.is_label]
             subscriptions.append({
                 "title": sub.title,
-                "feed_url": sub.feed_id,
+                "feed_id": sub.feed_id,
+                "feed_url": sub.url,
                 "id": sub.id,
                 "folders": folders,
-                "url": sub.url,
                 "html_url": sub.htmlUrl,
                 "icon_url": sub.iconUrl
             })
@@ -320,7 +320,7 @@ async def freshrss_get_unread_count() -> Dict[str, Any]:
         for count in unread_counts:
             if count.id.startswith("feed/"):
                 feeds.append({
-                    "feed_url": count.id[5:],
+                    "feed_id": count.id[5:],
                     "count": count.count
                 })
             elif count.id.startswith("user/-/label/"):
@@ -385,7 +385,7 @@ async def freshrss_get_articles(params: GetArticlesParams) -> Dict[str, Any]:
                 "author": article.author,
                 "published": article.published.isoformat() if article.published else None,
                 "feed_title": article.feed_title,
-                "feed_url": article.feed_url,
+                "feed_id": article.feed_id,
                 "is_read": article.is_read,
                 "is_starred": article.is_starred,
                 "labels": [cat for cat in article.categories if cat.startswith("user/-/label/")]
@@ -562,17 +562,13 @@ def main():
         if sys.argv[1] == "--http":
             transport = "streamable-http"
             print(f"🚀 Starting FreshRSS MCP Server on http://localhost:{port}")
-            print("📡 Available endpoints:")
-            print(f"   • WebSocket: ws://localhost:{port}/ws")
-            print(f"   • Health: http://localhost:{port}/health")
-            print("📋 MCP Tools: 15 tools available for FreshRSS management")
-            print("🔧 Configure in Claude Desktop with WebSocket URL")
+            print(f"📡 MCP endpoint (streamable HTTP): http://localhost:{port}/mcp")
         elif sys.argv[1] == "--sse":
             transport = "sse"
             print(f"🚀 Starting FreshRSS MCP Server with SSE on port {port}")
         elif sys.argv[1] == "--stdio":
+            # No print here: stdout is the JSON-RPC channel in stdio mode.
             transport = "stdio"
-            print("🚀 Starting FreshRSS MCP Server with stdio transport")
         elif sys.argv[1] in ["-h", "--help"]:
             print("FreshRSS MCP Server")
             print("Usage:")

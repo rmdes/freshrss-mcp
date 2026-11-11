@@ -99,8 +99,8 @@ class Article(BaseModel):
         return None
     
     @property
-    def feed_url(self) -> Optional[str]:
-        """Get the feed URL from origin."""
+    def feed_id(self) -> Optional[str]:
+        """Get the FreshRSS feed ID from origin (streamId is feed/<numeric id>)."""
         if self.origin:
             stream_id = self.origin.get("streamId", "")
             if stream_id.startswith("feed/"):
