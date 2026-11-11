@@ -70,14 +70,11 @@ Entries merge per key, so to add something to the env-based instance only, write
 FreshRSS's APIs cannot list or run user queries. Two ways to reach them:
 
 **1. The UserQueries extension (recommended: all queries, automatically).**
-`freshrss-extension/xExtension-UserQueries` adds `/api/misc.php?ext=UserQueries`, authenticated
-with the same Google Reader API login the MCP already uses. It lists every saved query (shared or
-not) and runs any of them by name. Tested on FreshRSS 1.30.1.
-
-1. Copy `freshrss-extension/xExtension-UserQueries` into the FreshRSS `extensions/` directory
-   (on Cloudron: `cloudron push --app <app> freshrss-extension/xExtension-UserQueries /app/data/extensions/`).
-2. As admin, enable **UserQueries** in Settings → Extensions (it is a system extension:
-   `/api/misc.php` only serves system-enabled extensions).
+[freshrss-user-queries](https://github.com/rmdes/freshrss-user-queries) (v0.1.0+) adds
+`/api/misc.php?ext=UserQueries`, authenticated with the same Google Reader API login the MCP
+already uses. It lists every saved query (shared or not) and runs any of them by name.
+Install it on each FreshRSS instance per its README (clone into `extensions/xExtension-UserQueries`,
+then enable **UserQueries** in Settings → Extensions as admin).
 
 **2. Share URLs (no server changes, one query at a time).** Shared queries are also served by
 `/api/query.php`. Enable **share as OPML** on the query (required for the JSON format the MCP

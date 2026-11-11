@@ -324,7 +324,7 @@ class FreshRSSClient:
     async def list_user_queries(self) -> List[Dict[str, Any]]:
         """List all saved user queries via the UserQueries extension.
 
-        Requires freshrss-extension/xExtension-UserQueries installed and enabled on the instance.
+        Requires https://github.com/rmdes/freshrss-user-queries installed and enabled on the instance.
         """
         response = await self._request(
             "GET", f"{self.base_url}/api/misc.php", params={"ext": "UserQueries"}
