@@ -57,7 +57,8 @@ class FreshRSSClient:
             api_password: API password (not the main password)
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url.rstrip("/")
+        # Accept both the instance root and the full greader endpoint URL.
+        self.base_url = base_url.rstrip("/").removesuffix("/api/greader.php")
         self.api_url = f"{self.base_url}/api/greader.php"
         self.email = email
         self.api_password = api_password

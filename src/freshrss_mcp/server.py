@@ -1,8 +1,9 @@
 """FreshRSS MCP Server implementation."""
 
-import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from dotenv import load_dotenv
@@ -21,12 +22,49 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("FreshRSS MCP Server")
 
-# Global client instance
-client: Optional[FreshRSSClient] = None
+DEFAULT_CONFIG = Path.home() / ".config" / "freshrss-mcp" / "instances.json"
+
+# Instances added at runtime via freshrss_authenticate (name -> credentials)
+runtime_instances: Dict[str, Dict[str, str]] = {}
+# One authenticated client per instance name, created on first use
+clients: Dict[str, FreshRSSClient] = {}
+# Name of the instance all tools act on
+active: Optional[str] = None
+
+
+def load_instances() -> Dict[str, Dict[str, str]]:
+    """Return configured instances: name -> {url, user, api_password}.
+
+    Sources, later wins: legacy FRESHRSS_* env vars (as "default"),
+    the JSON config file (FRESHRSS_CONFIG or ~/.config/freshrss-mcp/instances.json),
+    then instances added at runtime. Re-read on every call so edits apply without restart.
+    """
+    instances: Dict[str, Dict[str, str]] = {}
+    if os.getenv("FRESHRSS_URL"):
+        instances["default"] = {
+            "url": os.getenv("FRESHRSS_URL", ""),
+            "user": os.getenv("FRESHRSS_EMAIL", ""),
+            "api_password": os.getenv("FRESHRSS_API_PASSWORD", ""),
+        }
+    config = Path(os.getenv("FRESHRSS_CONFIG", DEFAULT_CONFIG)).expanduser()
+    if config.is_file():
+        instances.update(json.loads(config.read_text()))
+    instances.update(runtime_instances)
+    return instances
+
+
+def active_name() -> Optional[str]:
+    """Active instance: the switched-to one, else FRESHRSS_INSTANCE, else the first configured."""
+    instances = load_instances()
+    for name in (active, os.getenv("FRESHRSS_INSTANCE")):
+        if name in instances:
+            return name
+    return next(iter(instances), None)
 
 
 class AuthenticateParams(BaseModel):
     """Parameters for authentication."""
+    name: Optional[str] = Field(None, description="Instance name to register these credentials under (defaults to the active instance)")
     base_url: Optional[str] = Field(None, description="FreshRSS instance URL (uses env if not provided)")
     email: Optional[str] = Field(None, description="User email (uses env if not provided)")
     api_password: Optional[str] = Field(None, description="API password (uses env if not provided)")
@@ -66,61 +104,118 @@ class UnsubscribeParams(BaseModel):
     feed_url: str = Field(..., description="URL of the feed to unsubscribe from")
 
 
-async def ensure_authenticated():
-    """Ensure the client is authenticated."""
-    global client
-    if client is None:
-        # Try to create client from environment variables
-        base_url = os.getenv("FRESHRSS_URL")
-        email = os.getenv("FRESHRSS_EMAIL")
-        api_password = os.getenv("FRESHRSS_API_PASSWORD")
-        
-        if not all([base_url, email, api_password]):
-            raise AuthenticationError(
-                "Not authenticated. Please call freshrss_authenticate first or set environment variables."
-            )
-        
-        client = FreshRSSClient(base_url, email, api_password)
+async def connect(name: str, cfg: Dict[str, str]) -> FreshRSSClient:
+    """Authenticate against an instance and cache the client; state changes only on success."""
+    client = FreshRSSClient(cfg["url"], cfg["user"], cfg["api_password"])
+    try:
         await client.authenticate()
+    except Exception:
+        await client.close()
+        raise
+    old = clients.pop(name, None)
+    if old:
+        await old.close()
+    clients[name] = client
     return client
+
+
+async def ensure_authenticated(name: Optional[str] = None) -> FreshRSSClient:
+    """Return an authenticated client for `name` (default: the active instance)."""
+    name = name or active_name()
+    if name is None:
+        raise AuthenticationError(
+            f"No FreshRSS instance configured. Create {DEFAULT_CONFIG}, "
+            "set FRESHRSS_* environment variables, or call freshrss_authenticate."
+        )
+    if name in clients:
+        return clients[name]
+    return await connect(name, load_instances()[name])
+
+
+@mcp.tool()
+async def freshrss_list_instances() -> Dict[str, Any]:
+    """List configured FreshRSS instances and which one is active."""
+    current = active_name()
+    return {
+        "success": True,
+        "active": current,
+        "instances": [
+            {
+                "name": name,
+                "url": cfg.get("url"),
+                "user": cfg.get("user"),
+                "active": name == current,
+                "connected": name in clients,
+            }
+            for name, cfg in load_instances().items()
+        ],
+    }
+
+
+class SwitchInstanceParams(BaseModel):
+    """Parameters for switching instance."""
+    name: str = Field(..., description="Instance name, as listed by freshrss_list_instances")
+
+
+@mcp.tool()
+async def freshrss_switch_instance(params: SwitchInstanceParams) -> Dict[str, Any]:
+    """Switch the FreshRSS instance that all other tools act on."""
+    global active
+    instances = load_instances()
+    if params.name not in instances:
+        return {
+            "success": False,
+            "error": f"Unknown instance '{params.name}'. Known: {', '.join(instances) or 'none'}",
+        }
+    try:
+        await ensure_authenticated(params.name)
+    except Exception as e:
+        logger.error(f"Failed to switch to {params.name}: {e}")
+        return {"success": False, "error": str(e)}
+    active = params.name
+    return {
+        "success": True,
+        "active": params.name,
+        "url": instances[params.name].get("url"),
+    }
 
 
 @mcp.tool()
 async def freshrss_authenticate(params: AuthenticateParams) -> Dict[str, Any]:
-    """Authenticate with FreshRSS instance.
-    
-    Uses provided parameters or falls back to environment variables:
-    - FRESHRSS_URL
-    - FRESHRSS_EMAIL  
-    - FRESHRSS_API_PASSWORD
+    """Authenticate with a FreshRSS instance and make it active.
+
+    Provided credentials are registered (for this session) under `name`,
+    or the active instance. Without credentials, re-authenticates the
+    configured instance `name` (or the active one).
     """
-    global client
-    
-    # Get credentials
-    base_url = params.base_url or os.getenv("FRESHRSS_URL")
-    email = params.email or os.getenv("FRESHRSS_EMAIL")
-    api_password = params.api_password or os.getenv("FRESHRSS_API_PASSWORD")
-    
-    if not all([base_url, email, api_password]):
+    global active
+    name = params.name or active_name() or "default"
+    cfg = dict(load_instances().get(name, {}))
+    if params.base_url:
+        cfg["url"] = params.base_url
+    if params.email:
+        cfg["user"] = params.email
+    if params.api_password:
+        cfg["api_password"] = params.api_password
+
+    if not all(cfg.get(k) for k in ("url", "user", "api_password")):
         return {
             "success": False,
-            "error": "Missing required credentials. Please provide base_url, email, and api_password."
+            "error": f"Missing credentials for instance '{name}'. Provide base_url, email, and api_password."
         }
-    
+
     try:
-        # Close existing client if any
-        if client:
-            await client.close()
-        
-        # Create new client
-        client = FreshRSSClient(base_url, email, api_password)
-        auth_response = await client.authenticate()
-        
+        await connect(name, cfg)
+        if params.base_url or params.email or params.api_password:
+            runtime_instances[name] = cfg
+        active = name
+
         return {
             "success": True,
             "message": "Successfully authenticated with FreshRSS",
-            "user": email,
-            "instance": base_url
+            "name": name,
+            "user": cfg["user"],
+            "instance": cfg["url"]
         }
     except Exception as e:
         logger.error(f"Authentication failed: {e}")
@@ -470,7 +565,7 @@ def main():
             print("📡 Available endpoints:")
             print(f"   • WebSocket: ws://localhost:{port}/ws")
             print(f"   • Health: http://localhost:{port}/health")
-            print("📋 MCP Tools: 13 tools available for FreshRSS management")
+            print("📋 MCP Tools: 15 tools available for FreshRSS management")
             print("🔧 Configure in Claude Desktop with WebSocket URL")
         elif sys.argv[1] == "--sse":
             transport = "sse"
@@ -500,7 +595,7 @@ def main():
         
         # Show startup logs
         logger.info(f"🚀 FreshRSS MCP Server starting on http://localhost:{port}")
-        logger.info("📋 13 MCP tools loaded for FreshRSS management")
+        logger.info("📋 15 MCP tools loaded for FreshRSS management")
         
         # Use 0.0.0.0 when running in Docker to allow external connections
         host = "0.0.0.0" if os.getenv("DOCKER_CONTAINER", "").lower() == "true" else "localhost"

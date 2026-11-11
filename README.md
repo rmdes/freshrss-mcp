@@ -46,6 +46,22 @@ FRESHRSS_API_PASSWORD=your-api-password
 1. Enable API access in FreshRSS Settings → Authentication
 2. Set an API password in your Profile settings
 
+### Multiple Instances
+
+List instances in `~/.config/freshrss-mcp/instances.json` (or the path in `FRESHRSS_CONFIG`).
+The file is re-read on every call, so new instances show up without a restart:
+
+```json
+{
+  "skyfleet": {"url": "https://rss.example.com", "user": "rick", "api_password": "..."},
+  "work":     {"url": "https://rss.work.example", "user": "rick", "api_password": "..."}
+}
+```
+
+Env vars above, if set, become an extra instance named `default`. The active instance is,
+in order: the last one switched to, `FRESHRSS_INSTANCE`, or the first one listed.
+Use `freshrss_list_instances` and `freshrss_switch_instance`; every other tool acts on the active one.
+
 ## Running the Server
 
 ### Transport Modes
@@ -149,6 +165,15 @@ await freshrss_authenticate({
     "email": "user@example.com",
     "api_password": "your-api-password"
 })
+```
+
+#### `freshrss_list_instances`
+List configured instances (name, url, user, active, connected). Passwords are never returned.
+
+#### `freshrss_switch_instance`
+Switch the instance all other tools act on. Authenticates first; on failure the active instance is unchanged.
+```python
+freshrss_switch_instance({"name": "work"})
 ```
 
 ### Folder Management
