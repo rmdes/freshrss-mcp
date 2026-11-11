@@ -23,3 +23,22 @@ async def test_stream_id_encoding(monkeypatch):
     # FreshRSS regex needs a literal "/stream/contents/feed/" before the encoded URL.
     assert seen[0] == "reader/api/0/stream/contents/feed/https%3A%2F%2Fx.example%2Frss%3Fq%3Da%20b%26hl%3Den"
     assert seen[1] == "reader/api/0/stream/contents/user%2F-%2Flabel%2FTech%20News"
+
+
+async def test_query_url_is_rewritten_to_greader(monkeypatch):
+    client = FreshRSSClient("https://rss.example", "u", "p")
+    seen = []
+
+    async def fake_request(self, method, endpoint, params=None, auth_required=True, **kw):
+        seen.append((endpoint, params, auth_required))
+        return FakeResponse()
+
+    monkeypatch.setattr(FreshRSSClient, "_request", fake_request)
+    await client.get_query_contents(
+        "https://rss.example/api/query.php?user=rick&t=TOK&f=rss", count=5, offset=10, search="intitle:x"
+    )
+    assert seen == [(
+        "https://rss.example/api/query.php",
+        {"user": "rick", "t": "TOK", "f": "greader", "nb": 5, "offset": 10, "search": "intitle:x"},
+        False,
+    )]

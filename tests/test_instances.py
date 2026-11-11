@@ -79,3 +79,28 @@ async def test_authenticate_with_bad_creds_changes_nothing():
     res = await server.freshrss_authenticate(server.AuthenticateParams(
         name="adhoc", base_url="https://y", email="y", api_password="ok"))
     assert res["success"] and server.active_name() == "adhoc"
+
+
+async def test_queries_merge_into_env_instance(isolated, monkeypatch):
+    monkeypatch.setenv("FRESHRSS_URL", "https://env.example")
+    monkeypatch.setenv("FRESHRSS_EMAIL", "rick")
+    monkeypatch.setenv("FRESHRSS_API_PASSWORD", "a")
+    isolated.write_text(json.dumps({"default": {"queries": {"Libres": "https://env.example/api/query.php?t=X"}}}))
+    assert server.load_instances()["default"]["url"] == "https://env.example"
+
+    listed = await server.freshrss_list_queries()
+    assert listed["queries"] == ["Libres"] and listed["instance"] == "default"
+
+    async def fake_query(self, url, count=50, offset=0, search=None):
+        assert url.endswith("t=X") and count == 2
+        return FreshRSSClient._parse_stream({"title": "Libres", "items": [
+            {"id": "tag:google.com,2005:reader/item/1", "title": "a", "published": 1},
+            {"id": "tag:google.com,2005:reader/item/2", "title": "b", "published": 2},
+        ]}, url)
+
+    monkeypatch.setattr(FreshRSSClient, "get_query_contents", fake_query)
+    res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Libres", count=2))
+    assert res["success"] and res["count"] == 2 and res["has_more"] and res["next_offset"] == 2
+
+    res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="nope"))
+    assert not res["success"] and "Libres" in res["error"]

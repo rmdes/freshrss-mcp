@@ -62,6 +62,22 @@ Env vars above, if set, become an extra instance named `default`. The active ins
 in order: the last one switched to, `FRESHRSS_INSTANCE`, or the first one listed.
 Use `freshrss_list_instances` and `freshrss_switch_instance`; every other tool acts on the active one.
 
+Entries merge per key, so to add something to the env-based instance only, write e.g.
+`{"default": {"queries": {...}}}` without repeating credentials.
+
+### Saved User Queries
+
+FreshRSS has no API to list or run user queries. Only **shared** ones are reachable, through
+`/api/query.php`. In FreshRSS, open the query's share settings and enable **share as OPML**
+(required for the JSON format the MCP uses), then add its share URL under the instance:
+
+```json
+{"default": {"queries": {"MediasLibres": "https://rss.example.com/api/query.php?user=rick&t=TOKEN&f=rss"}}}
+```
+
+Any share URL works (`f=rss`, `f=greader`, ...); it is rewritten to `f=greader`. The token grants
+read access to that query without login, so keep the file private (`chmod 600`).
+
 ## Running the Server
 
 ### Transport Modes
@@ -174,6 +190,18 @@ List configured instances (name, url, user, active, connected). Passwords are ne
 Switch the instance all other tools act on. Authenticates first; on failure the active instance is unchanged.
 ```python
 freshrss_switch_instance({"name": "work"})
+```
+
+### User Queries
+
+#### `freshrss_list_queries`
+List the shared user queries configured for the active instance.
+
+#### `freshrss_get_query_articles`
+Fetch a query's articles. Pages by `offset` (the endpoint has no continuation token); `search`
+narrows the query with FreshRSS search syntax, ANDed with the query's own filter.
+```python
+freshrss_get_query_articles({"name": "MediasLibres", "count": 20, "offset": 20, "search": "intitle:police"})
 ```
 
 ### Folder Management

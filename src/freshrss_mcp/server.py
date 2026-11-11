@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from .client import FreshRSSClient, AuthenticationError
+from .models import Article
 
 # Load environment variables
 load_dotenv()
@@ -25,21 +26,21 @@ mcp = FastMCP("FreshRSS MCP Server")
 DEFAULT_CONFIG = Path.home() / ".config" / "freshrss-mcp" / "instances.json"
 
 # Instances added at runtime via freshrss_authenticate (name -> credentials)
-runtime_instances: Dict[str, Dict[str, str]] = {}
+runtime_instances: Dict[str, Dict[str, Any]] = {}
 # One authenticated client per instance name, created on first use
 clients: Dict[str, FreshRSSClient] = {}
 # Name of the instance all tools act on
 active: Optional[str] = None
 
 
-def load_instances() -> Dict[str, Dict[str, str]]:
+def load_instances() -> Dict[str, Dict[str, Any]]:
     """Return configured instances: name -> {url, user, api_password}.
 
     Sources, later wins: legacy FRESHRSS_* env vars (as "default"),
     the JSON config file (FRESHRSS_CONFIG or ~/.config/freshrss-mcp/instances.json),
     then instances added at runtime. Re-read on every call so edits apply without restart.
     """
-    instances: Dict[str, Dict[str, str]] = {}
+    instances: Dict[str, Dict[str, Any]] = {}
     if os.getenv("FRESHRSS_URL"):
         instances["default"] = {
             "url": os.getenv("FRESHRSS_URL", ""),
@@ -48,8 +49,13 @@ def load_instances() -> Dict[str, Dict[str, str]]:
         }
     config = Path(os.getenv("FRESHRSS_CONFIG", DEFAULT_CONFIG)).expanduser()
     if config.is_file():
-        instances.update(json.loads(config.read_text()))
-    instances.update(runtime_instances)
+        sources = [json.loads(config.read_text()), runtime_instances]
+    else:
+        sources = [runtime_instances]
+    # Merge per key, so e.g. {"default": {"queries": {...}}} in the file extends the env instance.
+    for source in sources:
+        for name, cfg in source.items():
+            instances[name] = {**instances.get(name, {}), **cfg}
     return instances
 
 
@@ -146,6 +152,7 @@ async def freshrss_list_instances() -> Dict[str, Any]:
                 "user": cfg.get("user"),
                 "active": name == current,
                 "connected": name in clients,
+                "queries": sorted(cfg.get("queries", {})),
             }
             for name, cfg in load_instances().items()
         ],
@@ -345,6 +352,24 @@ async def freshrss_get_unread_count() -> Dict[str, Any]:
         }
 
 
+def article_dict(article: Article) -> Dict[str, Any]:
+    """Shape an Article for tool output."""
+    return {
+        "id": article.id,
+        "title": article.title,
+        "url": article.url,
+        "content": article.content,
+        "summary": article.summary,
+        "author": article.author,
+        "published": article.published.isoformat() if article.published else None,
+        "feed_title": article.feed_title,
+        "feed_id": article.feed_id,
+        "is_read": article.is_read,
+        "is_starred": article.is_starred,
+        "labels": [cat for cat in article.categories if cat.startswith("user/-/label/")]
+    }
+
+
 @mcp.tool()
 async def freshrss_get_articles(params: GetArticlesParams) -> Dict[str, Any]:
     """Fetch articles with various filters."""
@@ -373,24 +398,7 @@ async def freshrss_get_articles(params: GetArticlesParams) -> Dict[str, Any]:
             continuation=params.continuation
         )
         
-        # Format articles
-        articles = []
-        for article in stream.items:
-            articles.append({
-                "id": article.id,
-                "title": article.title,
-                "url": article.url,
-                "content": article.content,
-                "summary": article.summary,
-                "author": article.author,
-                "published": article.published.isoformat() if article.published else None,
-                "feed_title": article.feed_title,
-                "feed_id": article.feed_id,
-                "is_read": article.is_read,
-                "is_starred": article.is_starred,
-                "labels": [cat for cat in article.categories if cat.startswith("user/-/label/")]
-            })
-        
+        articles = [article_dict(article) for article in stream.items]
         return {
             "success": True,
             "articles": articles,
@@ -404,6 +412,60 @@ async def freshrss_get_articles(params: GetArticlesParams) -> Dict[str, Any]:
             "success": False,
             "error": str(e)
         }
+
+
+def query_urls() -> Dict[str, str]:
+    """Shared user queries (name -> share URL) configured for the active instance."""
+    name = active_name()
+    return load_instances().get(name, {}).get("queries", {}) if name else {}
+
+
+@mcp.tool()
+async def freshrss_list_queries() -> Dict[str, Any]:
+    """List the saved user queries configured for the active instance.
+
+    FreshRSS has no API to list user queries; only queries shared in the FreshRSS UI
+    and added to the instance's "queries" config are available.
+    """
+    names = sorted(query_urls())
+    return {"success": True, "instance": active_name(), "queries": names, "count": len(names)}
+
+
+class QueryArticlesParams(BaseModel):
+    """Parameters for fetching a user query's articles."""
+    name: str = Field(..., description="Query name, as listed by freshrss_list_queries")
+    count: int = Field(50, description="Number of articles to fetch")
+    offset: int = Field(0, description="Number of articles to skip, for paging")
+    search: Optional[str] = Field(None, description="Extra FreshRSS search to narrow the query (ANDed with it)")
+
+
+@mcp.tool()
+async def freshrss_get_query_articles(params: QueryArticlesParams) -> Dict[str, Any]:
+    """Fetch the articles matched by a saved FreshRSS user query."""
+    urls = query_urls()
+    if params.name not in urls:
+        return {
+            "success": False,
+            "error": f"Unknown query '{params.name}'. Known: {', '.join(sorted(urls)) or 'none'}",
+        }
+    try:
+        client = await ensure_authenticated()
+        stream = await client.get_query_contents(
+            urls[params.name], count=params.count, offset=params.offset, search=params.search
+        )
+        articles = [article_dict(article) for article in stream.items]
+        return {
+            "success": True,
+            "query": stream.title or params.name,
+            "articles": articles,
+            "count": len(articles),
+            # No continuation token on this endpoint: a full page means there may be more.
+            "has_more": len(articles) == params.count,
+            "next_offset": params.offset + len(articles),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get query articles: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @mcp.tool()
@@ -591,7 +653,7 @@ def main():
         
         # Show startup logs
         logger.info(f"🚀 FreshRSS MCP Server starting on http://localhost:{port}")
-        logger.info("📋 15 MCP tools loaded for FreshRSS management")
+        logger.info("📋 17 MCP tools loaded for FreshRSS management")
         
         # Use 0.0.0.0 when running in Docker to allow external connections
         host = "0.0.0.0" if os.getenv("DOCKER_CONTAINER", "").lower() == "true" else "localhost"

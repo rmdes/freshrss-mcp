@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, List, Optional, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from datetime import datetime
 
 import httpx
@@ -114,7 +114,7 @@ class FreshRSSClient:
                 raise AuthenticationError("Not authenticated. Call authenticate() first.")
             headers["Authorization"] = f"GoogleLogin auth={self.auth_token}"
 
-        url = self._build_url(endpoint)
+        url = endpoint if endpoint.startswith(("http://", "https://")) else self._build_url(endpoint)
 
         # httpx 0.28 bug: passing a list of tuples as `data` to AsyncClient
         # raises "Attempted to send a sync request with an AsyncClient instance".
@@ -289,9 +289,41 @@ class FreshRSSClient:
         endpoint = f"reader/api/0/stream/contents/{encoded_stream}"
         
         response = await self._request("GET", endpoint, params=params)
-        data = response.json()
-        
-        # Parse articles
+        return self._parse_stream(response.json(), stream_id)
+
+    async def get_query_contents(
+        self,
+        query_url: str,
+        count: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+    ) -> StreamContents:
+        """Get articles from a shared user query (p/api/query.php).
+
+        FreshRSS only exposes user queries that are shared; the share URL carries
+        its own token, so no API auth is needed. Any share URL works (f=rss, f=greader...):
+        it is rewritten to the greader JSON format, which needs "share as OPML" enabled.
+
+        Args:
+            query_url: Share URL of the user query
+            count: Number of items to fetch
+            offset: Number of items to skip (the endpoint has no continuation token)
+            search: Extra FreshRSS search, ANDed with the query's own filter
+        """
+        parts = urlsplit(query_url)
+        params: Dict[str, Any] = dict(parse_qsl(parts.query))
+        params.update({"f": "greader", "nb": count})
+        if offset:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        url = urlunsplit(parts._replace(query=""))
+        response = await self._request("GET", url, params=params, auth_required=False)
+        return self._parse_stream(response.json(), url)
+
+    @staticmethod
+    def _parse_stream(data: Dict[str, Any], stream_id: str) -> StreamContents:
+        """Parse a Google Reader stream JSON payload into StreamContents."""
         articles = []
         for item in data.get("items", []):
             # Convert timestamps
