@@ -1,0 +1,8 @@
+{
+	"name": "UserQueries",
+	"author": "freshrss-mcp",
+	"description": "API endpoint to list and run saved user queries: /api/misc.php?ext=UserQueries (Google Reader API auth)",
+	"version": "0.1.0",
+	"entrypoint": "UserQueries",
+	"type": "system"
+}

@@ -422,13 +422,30 @@ def query_urls() -> Dict[str, str]:
 
 @mcp.tool()
 async def freshrss_list_queries() -> Dict[str, Any]:
-    """List the saved user queries configured for the active instance.
+    """List saved user queries of the active instance.
 
-    FreshRSS has no API to list user queries; only queries shared in the FreshRSS UI
-    and added to the instance's "queries" config are available.
+    All queries come from the instance's UserQueries extension when installed; queries
+    configured by share URL under the instance's "queries" config are listed too.
     """
-    names = sorted(query_urls())
-    return {"success": True, "instance": active_name(), "queries": names, "count": len(names)}
+    queries: List[Dict[str, Any]] = [{"name": n, "source": "share_url"} for n in sorted(query_urls())]
+    result: Dict[str, Any] = {"success": True, "instance": active_name()}
+    try:
+        client = await ensure_authenticated()
+        configured = {q["name"] for q in queries}
+        for q in await client.list_user_queries():
+            if q.get("name") not in configured:
+                queries.append({
+                    "name": q.get("name"),
+                    "source": "extension",
+                    "description": q.get("description") or None,
+                    "filter": q.get("get_name") or q.get("get"),
+                    "search": q.get("search") or None,
+                })
+    except Exception as e:
+        # Extension missing (404) or unreachable: still return configured queries.
+        result["extension_error"] = str(e)
+    result.update({"queries": queries, "count": len(queries)})
+    return result
 
 
 class QueryArticlesParams(BaseModel):
@@ -441,18 +458,22 @@ class QueryArticlesParams(BaseModel):
 
 @mcp.tool()
 async def freshrss_get_query_articles(params: QueryArticlesParams) -> Dict[str, Any]:
-    """Fetch the articles matched by a saved FreshRSS user query."""
+    """Fetch the articles matched by a saved FreshRSS user query.
+
+    Uses the configured share URL when the name is in the instance's "queries" config,
+    otherwise runs the query through the UserQueries extension.
+    """
     urls = query_urls()
-    if params.name not in urls:
-        return {
-            "success": False,
-            "error": f"Unknown query '{params.name}'. Known: {', '.join(sorted(urls)) or 'none'}",
-        }
     try:
         client = await ensure_authenticated()
-        stream = await client.get_query_contents(
-            urls[params.name], count=params.count, offset=params.offset, search=params.search
-        )
+        if params.name in urls:
+            stream = await client.get_query_contents(
+                urls[params.name], count=params.count, offset=params.offset, search=params.search
+            )
+        else:
+            stream = await client.get_user_query_contents(
+                params.name, count=params.count, offset=params.offset, search=params.search
+            )
         articles = [article_dict(article) for article in stream.items]
         return {
             "success": True,

@@ -321,6 +321,32 @@ class FreshRSSClient:
         response = await self._request("GET", url, params=params, auth_required=False)
         return self._parse_stream(response.json(), url)
 
+    async def list_user_queries(self) -> List[Dict[str, Any]]:
+        """List all saved user queries via the UserQueries extension.
+
+        Requires freshrss-extension/xExtension-UserQueries installed and enabled on the instance.
+        """
+        response = await self._request(
+            "GET", f"{self.base_url}/api/misc.php", params={"ext": "UserQueries"}
+        )
+        return response.json().get("queries", [])
+
+    async def get_user_query_contents(
+        self,
+        name: str,
+        count: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+    ) -> StreamContents:
+        """Run a saved user query by name via the UserQueries extension (shared or not)."""
+        params: Dict[str, Any] = {"ext": "UserQueries", "name": name, "nb": count}
+        if offset:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        response = await self._request("GET", f"{self.base_url}/api/misc.php", params=params)
+        return self._parse_stream(response.json(), name)
+
     @staticmethod
     def _parse_stream(data: Dict[str, Any], stream_id: str) -> StreamContents:
         """Parse a Google Reader stream JSON payload into StreamContents."""

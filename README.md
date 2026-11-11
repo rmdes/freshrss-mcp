@@ -67,9 +67,21 @@ Entries merge per key, so to add something to the env-based instance only, write
 
 ### Saved User Queries
 
-FreshRSS has no API to list or run user queries. Only **shared** ones are reachable, through
-`/api/query.php`. In FreshRSS, open the query's share settings and enable **share as OPML**
-(required for the JSON format the MCP uses), then add its share URL under the instance:
+FreshRSS's APIs cannot list or run user queries. Two ways to reach them:
+
+**1. The UserQueries extension (recommended: all queries, automatically).**
+`freshrss-extension/xExtension-UserQueries` adds `/api/misc.php?ext=UserQueries`, authenticated
+with the same Google Reader API login the MCP already uses. It lists every saved query (shared or
+not) and runs any of them by name. Tested on FreshRSS 1.30.1.
+
+1. Copy `freshrss-extension/xExtension-UserQueries` into the FreshRSS `extensions/` directory
+   (on Cloudron: `cloudron push --app <app> freshrss-extension/xExtension-UserQueries /app/data/extensions/`).
+2. As admin, enable **UserQueries** in Settings → Extensions (it is a system extension:
+   `/api/misc.php` only serves system-enabled extensions).
+
+**2. Share URLs (no server changes, one query at a time).** Shared queries are also served by
+`/api/query.php`. Enable **share as OPML** on the query (required for the JSON format the MCP
+uses), then add its share URL under the instance; configured names take precedence:
 
 ```json
 {"default": {"queries": {"MediasLibres": "https://rss.example.com/api/query.php?user=rick&t=TOKEN&f=rss"}}}
@@ -195,7 +207,8 @@ freshrss_switch_instance({"name": "work"})
 ### User Queries
 
 #### `freshrss_list_queries`
-List the shared user queries configured for the active instance.
+List the active instance's user queries: all of them from the UserQueries extension, plus any
+configured share URLs. If the extension is missing, `extension_error` says why.
 
 #### `freshrss_get_query_articles`
 Fetch a query's articles. Pages by `offset` (the endpoint has no continuation token); `search`

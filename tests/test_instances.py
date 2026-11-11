@@ -5,7 +5,7 @@ import json
 import pytest
 
 from freshrss_mcp import server
-from freshrss_mcp.client import AuthenticationError, FreshRSSClient
+from freshrss_mcp.client import APIError, AuthenticationError, FreshRSSClient
 
 
 @pytest.fixture(autouse=True)
@@ -88,19 +88,39 @@ async def test_queries_merge_into_env_instance(isolated, monkeypatch):
     isolated.write_text(json.dumps({"default": {"queries": {"Libres": "https://env.example/api/query.php?t=X"}}}))
     assert server.load_instances()["default"]["url"] == "https://env.example"
 
+    async def no_extension(self):
+        raise APIError("HTTP 404: Not Found!")
+
+    monkeypatch.setattr(FreshRSSClient, "list_user_queries", no_extension)
     listed = await server.freshrss_list_queries()
-    assert listed["queries"] == ["Libres"] and listed["instance"] == "default"
+    assert listed["queries"] == [{"name": "Libres", "source": "share_url"}]
+    assert listed["instance"] == "default" and "404" in listed["extension_error"]
 
-    async def fake_query(self, url, count=50, offset=0, search=None):
-        assert url.endswith("t=X") and count == 2
-        return FreshRSSClient._parse_stream({"title": "Libres", "items": [
-            {"id": "tag:google.com,2005:reader/item/1", "title": "a", "published": 1},
-            {"id": "tag:google.com,2005:reader/item/2", "title": "b", "published": 2},
-        ]}, url)
+    async def with_extension(self):
+        return [{"name": "Libres", "get": "a"}, {"name": "Bots", "get": "c_3", "get_name": "News", "search": "x"}]
 
-    monkeypatch.setattr(FreshRSSClient, "get_query_contents", fake_query)
+    monkeypatch.setattr(FreshRSSClient, "list_user_queries", with_extension)
+    listed = await server.freshrss_list_queries()
+    assert [(q["name"], q["source"]) for q in listed["queries"]] == [("Libres", "share_url"), ("Bots", "extension")]
+    assert listed["queries"][1]["filter"] == "News" and "extension_error" not in listed
+
+    items = {"title": "q", "items": [
+        {"id": "tag:google.com,2005:reader/item/1", "title": "a", "published": 1},
+        {"id": "tag:google.com,2005:reader/item/2", "title": "b", "published": 2},
+    ]}
+    calls = []
+
+    async def fake_share(self, url, count=50, offset=0, search=None):
+        calls.append(("share", url))
+        return FreshRSSClient._parse_stream(items, url)
+
+    async def fake_ext(self, name, count=50, offset=0, search=None):
+        calls.append(("extension", name))
+        return FreshRSSClient._parse_stream(items, name)
+
+    monkeypatch.setattr(FreshRSSClient, "get_query_contents", fake_share)
+    monkeypatch.setattr(FreshRSSClient, "get_user_query_contents", fake_ext)
     res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Libres", count=2))
     assert res["success"] and res["count"] == 2 and res["has_more"] and res["next_offset"] == 2
-
-    res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="nope"))
-    assert not res["success"] and "Libres" in res["error"]
+    await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Bots"))
+    assert calls == [("share", "https://env.example/api/query.php?t=X"), ("extension", "Bots")]
