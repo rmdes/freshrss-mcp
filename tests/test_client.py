@@ -42,3 +42,27 @@ async def test_query_url_is_rewritten_to_greader(monkeypatch):
         {"user": "rick", "t": "TOK", "f": "greader", "nb": 5, "offset": 10, "search": "intitle:x"},
         False,
     )]
+
+
+async def test_user_query_action_form_encoding(monkeypatch):
+    client = FreshRSSClient("https://rss.example", "u", "p")
+    seen = []
+
+    class JsonResponse:
+        def json(self):
+            return {"query": {"id": 3}}
+
+    async def fake_request(self, method, endpoint, params=None, data=None, **kw):
+        seen.append((method, endpoint, params, data))
+        return JsonResponse()
+
+    monkeypatch.setattr(FreshRSSClient, "_request", fake_request)
+    out = await client.user_query_action(
+        "create", name="Libres", category="MediasLibres", state=["read", "unread"],
+        share_rss=True, share_opml=False, search=None, id=0,
+    )
+    assert out == {"query": {"id": 3}}
+    assert seen == [("POST", "https://rss.example/api/misc.php", {"ext": "UserQueries"}, {
+        "action": "create", "name": "Libres", "category": "MediasLibres", "state": "read,unread",
+        "share_rss": "1", "share_opml": "0", "id": "0",
+    })]

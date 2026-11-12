@@ -70,7 +70,7 @@ Entries merge per key, so to add something to the env-based instance only, write
 FreshRSS's APIs cannot list or run user queries. Two ways to reach them:
 
 **1. The UserQueries extension (recommended: all queries, automatically).**
-[freshrss-user-queries](https://github.com/rmdes/freshrss-user-queries) (v0.1.0+) adds
+[freshrss-user-queries](https://github.com/rmdes/freshrss-user-queries) (v0.1.0+; v0.2.0+ to create/edit/share) adds
 `/api/misc.php?ext=UserQueries`, authenticated with the same Google Reader API login the MCP
 already uses. It lists every saved query (shared or not) and runs any of them by name.
 Install it on each FreshRSS instance per its README (clone into `extensions/xExtension-UserQueries`,
@@ -212,6 +212,17 @@ Fetch a query's articles. Pages by `offset` (the endpoint has no continuation to
 narrows the query with FreshRSS search syntax, ANDed with the query's own filter.
 ```python
 freshrss_get_query_articles({"name": "MediasLibres", "count": 20, "offset": 20, "search": "intitle:police"})
+```
+
+#### `freshrss_create_query` / `freshrss_update_query` / `freshrss_delete_query`
+Manage saved queries (needs the UserQueries extension v0.2.0+). Create one on a folder, toggle
+sharing, and get the public links back (`html`/`rss` with `share_rss`, `greader`/`opml` with
+`share_opml`). Update and delete take the query's `id` or a unique `name`; update only changes the
+fields given, and keeps the share token so links survive turning sharing off and on.
+```python
+freshrss_create_query({"name": "MediasLibres", "folder": "MediasLibres", "share_rss": True, "share_opml": True})
+freshrss_update_query({"name": "MediasLibres", "share_opml": False})
+freshrss_delete_query({"id": 12})
 ```
 
 ### Folder Management

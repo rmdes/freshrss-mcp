@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Literal, Optional
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -420,6 +420,25 @@ def query_urls() -> Dict[str, str]:
     return load_instances().get(name, {}).get("queries", {}) if name else {}
 
 
+def query_summary(q: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a query from the UserQueries extension for tool output."""
+    summary = {
+        "id": q.get("id"),
+        "name": q.get("name"),
+        "source": "extension",
+        "description": q.get("description") or None,
+        "filter": q.get("get_name") or q.get("get"),
+        "search": q.get("search") or None,
+    }
+    if "shared_rss" in q:  # Extension v0.2.0+
+        summary.update({
+            "shared_rss": q["shared_rss"],
+            "shared_opml": q.get("shared_opml"),
+            "urls": {k: v for k, v in (q.get("urls") or {}).items() if v},
+        })
+    return summary
+
+
 @mcp.tool()
 async def freshrss_list_queries() -> Dict[str, Any]:
     """List saved user queries of the active instance.
@@ -434,13 +453,7 @@ async def freshrss_list_queries() -> Dict[str, Any]:
         configured = {q["name"] for q in queries}
         for q in await client.list_user_queries():
             if q.get("name") not in configured:
-                queries.append({
-                    "name": q.get("name"),
-                    "source": "extension",
-                    "description": q.get("description") or None,
-                    "filter": q.get("get_name") or q.get("get"),
-                    "search": q.get("search") or None,
-                })
+                queries.append(query_summary(q))
     except Exception as e:
         # Extension missing (404) or unreachable: still return configured queries.
         result["extension_error"] = str(e)
@@ -487,6 +500,93 @@ async def freshrss_get_query_articles(params: QueryArticlesParams) -> Dict[str, 
     except Exception as e:
         logger.error(f"Failed to get query articles: {e}")
         return {"success": False, "error": str(e)}
+
+
+QueryState = Literal["read", "unread", "favorite", "not_favorite"]
+ORDERS = {"newest": "DESC", "oldest": "ASC"}
+
+
+class QueryFields(BaseModel):
+    """Editable fields of a saved user query (None = leave unchanged)."""
+    folder: Optional[str] = Field(None, description="Folder (category) name the query is limited to")
+    search: Optional[str] = Field(None, description="FreshRSS search expression, e.g. 'intitle:police'; '' clears it")
+    state: Optional[List[QueryState]] = Field(None, description="Article states to show, e.g. ['unread']")
+    order: Optional[Literal["newest", "oldest"]] = Field(None, description="Sort order")
+    description: Optional[str] = Field(None, description="Free-text description")
+    share_rss: Optional[bool] = Field(None, description="Share by HTML & RSS (public links, no login needed)")
+    share_opml: Optional[bool] = Field(None, description="Share by OPML and GReader JSON (public links, no login needed)")
+
+    def as_fields(self) -> Dict[str, Any]:
+        return {
+            "category": self.folder,
+            "search": self.search,
+            "state": self.state,
+            "order": ORDERS[self.order] if self.order else None,
+            "description": self.description,
+            "share_rss": self.share_rss,
+            "share_opml": self.share_opml,
+        }
+
+
+class CreateQueryParams(QueryFields):
+    """Parameters for creating a user query."""
+    name: str = Field(..., description="Name of the new query (must be unique)")
+
+
+class QueryRef(BaseModel):
+    """Which query: id (from freshrss_list_queries) or a unique name."""
+    id: Optional[int] = Field(None, description="Query id, as listed by freshrss_list_queries")
+    name: Optional[str] = Field(None, description="Query name, if no other query shares it")
+
+
+class UpdateQueryParams(QueryFields, QueryRef):
+    """Parameters for updating a user query."""
+    new_name: Optional[str] = Field(None, description="Rename the query (must be unique)")
+
+
+async def query_action(action: str, **fields: Any) -> Dict[str, Any]:
+    """Run a UserQueries extension write action and shape the result."""
+    try:
+        client = await ensure_authenticated()
+        result = await client.user_query_action(action, **fields)
+    except Exception as e:
+        logger.error(f"Failed to {action} user query: {e}")
+        return {"success": False, "error": str(e)}
+    if "query" in result:
+        return {"success": True, "query": query_summary(result["query"])}
+    return {"success": True, **result}
+
+
+@mcp.tool()
+async def freshrss_create_query(params: CreateQueryParams) -> Dict[str, Any]:
+    """Create a saved user query (e.g. on a folder), optionally shared.
+
+    Returns the query with its public share links (html/rss when share_rss, greader/opml
+    when share_opml). Requires the UserQueries extension v0.2.0+ on the instance.
+    """
+    return await query_action("create", name=params.name, **params.as_fields())
+
+
+@mcp.tool()
+async def freshrss_update_query(params: UpdateQueryParams) -> Dict[str, Any]:
+    """Change a saved user query: filter, search, name, or sharing on/off.
+
+    Only the fields given are changed. Turning sharing off disables the public links; the
+    share token is kept, so turning it back on restores the same links.
+    """
+    if params.id is None and not params.name:
+        return {"success": False, "error": "Give the query id or name"}
+    return await query_action(
+        "update", id=params.id, name=params.name, new_name=params.new_name, **params.as_fields()
+    )
+
+
+@mcp.tool()
+async def freshrss_delete_query(params: QueryRef) -> Dict[str, Any]:
+    """Delete a saved user query (its share links stop working)."""
+    if params.id is None and not params.name:
+        return {"success": False, "error": "Give the query id or name"}
+    return await query_action("delete", id=params.id, name=params.name)
 
 
 @mcp.tool()
@@ -674,7 +774,7 @@ def main():
         
         # Show startup logs
         logger.info(f"🚀 FreshRSS MCP Server starting on http://localhost:{port}")
-        logger.info("📋 17 MCP tools loaded for FreshRSS management")
+        logger.info("📋 20 MCP tools loaded for FreshRSS management")
         
         # Use 0.0.0.0 when running in Docker to allow external connections
         host = "0.0.0.0" if os.getenv("DOCKER_CONTAINER", "").lower() == "true" else "localhost"

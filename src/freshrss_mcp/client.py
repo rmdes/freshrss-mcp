@@ -347,6 +347,25 @@ class FreshRSSClient:
         response = await self._request("GET", f"{self.base_url}/api/misc.php", params=params)
         return self._parse_stream(response.json(), name)
 
+    async def user_query_action(self, action: str, **fields: Any) -> Dict[str, Any]:
+        """Create, update or delete a saved user query via the UserQueries extension (v0.2.0+).
+
+        Fields set to None are omitted; booleans are sent as 1/0 and lists comma-joined.
+        """
+        data = {"action": action}
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                value = "1" if value else "0"
+            elif isinstance(value, (list, tuple)):
+                value = ",".join(value)
+            data[key] = str(value)
+        response = await self._request(
+            "POST", f"{self.base_url}/api/misc.php", params={"ext": "UserQueries"}, data=data
+        )
+        return response.json()
+
     @staticmethod
     def _parse_stream(data: Dict[str, Any], stream_id: str) -> StreamContents:
         """Parse a Google Reader stream JSON payload into StreamContents."""
