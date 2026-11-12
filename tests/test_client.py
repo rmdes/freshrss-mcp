@@ -66,3 +66,29 @@ async def test_user_query_action_form_encoding(monkeypatch):
         "action": "create", "name": "Libres", "category": "MediasLibres", "state": "read,unread",
         "share_rss": "1", "share_opml": "0", "id": "0",
     })]
+
+
+def test_future_published_dates_are_clamped_to_crawl_time():
+    crawl = 1_800_000_000  # seconds
+    stream = FreshRSSClient._parse_stream({"items": [
+        {"id": "future", "title": "f", "published": crawl + 3 * 86400, "crawlTimeMsec": str(crawl * 1000)},
+        {"id": "normal", "title": "n", "published": crawl - 3600, "crawlTimeMsec": str(crawl * 1000)},
+        {"id": "no-crawl", "title": "x", "published": crawl + 86400},
+    ]}, "s")
+    published = {a.id: a.published.timestamp() for a in stream.items}
+    assert published == {"future": crawl, "normal": crawl - 3600, "no-crawl": crawl + 86400}
+
+
+async def test_hours_window_reaches_both_query_endpoints(monkeypatch):
+    client = FreshRSSClient("https://rss.example", "u", "p")
+    seen = []
+
+    async def fake_request(self, method, endpoint, params=None, **kw):
+        seen.append(params)
+        return FakeResponse()
+
+    monkeypatch.setattr(FreshRSSClient, "_request", fake_request)
+    await client.get_query_contents("https://rss.example/api/query.php?user=u&t=T", count=400, hours=720)
+    await client.get_user_query_contents("Bots", count=400, offset=400, hours=720)
+    assert seen[0] == {"user": "u", "t": "T", "f": "greader", "nb": 400, "hours": 720}
+    assert seen[1] == {"ext": "UserQueries", "name": "Bots", "nb": 400, "offset": 400, "hours": 720}

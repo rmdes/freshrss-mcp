@@ -297,6 +297,7 @@ class FreshRSSClient:
         count: int = 50,
         offset: int = 0,
         search: Optional[str] = None,
+        hours: Optional[int] = None,
     ) -> StreamContents:
         """Get articles from a shared user query (p/api/query.php).
 
@@ -309,14 +310,15 @@ class FreshRSSClient:
             count: Number of items to fetch
             offset: Number of items to skip (the endpoint has no continuation token)
             search: Extra FreshRSS search, ANDed with the query's own filter
+            hours: Only articles received in the last N hours (FreshRSS's own `hours` filter)
+
+        FreshRSS caps each response at the user's max_posts_per_rss (400 by default),
+        whatever `count` is; page with `offset` to go further.
         """
         parts = urlsplit(query_url)
         params: Dict[str, Any] = dict(parse_qsl(parts.query))
         params.update({"f": "greader", "nb": count})
-        if offset:
-            params["offset"] = offset
-        if search:
-            params["search"] = search
+        params.update(self._query_filters(offset, search, hours))
         url = urlunsplit(parts._replace(query=""))
         response = await self._request("GET", url, params=params, auth_required=False)
         return self._parse_stream(response.json(), url)
@@ -337,13 +339,14 @@ class FreshRSSClient:
         count: int = 50,
         offset: int = 0,
         search: Optional[str] = None,
+        hours: Optional[int] = None,
     ) -> StreamContents:
-        """Run a saved user query by name via the UserQueries extension (shared or not)."""
+        """Run a saved user query by name via the UserQueries extension (shared or not).
+
+        Same filters and per-response cap as get_query_contents.
+        """
         params: Dict[str, Any] = {"ext": "UserQueries", "name": name, "nb": count}
-        if offset:
-            params["offset"] = offset
-        if search:
-            params["search"] = search
+        params.update(self._query_filters(offset, search, hours))
         response = await self._request("GET", f"{self.base_url}/api/misc.php", params=params)
         return self._parse_stream(response.json(), name)
 
@@ -367,16 +370,31 @@ class FreshRSSClient:
         return response.json()
 
     @staticmethod
+    def _query_filters(offset: int, search: Optional[str], hours: Optional[int]) -> Dict[str, Any]:
+        """Optional paging/filter params shared by both user query endpoints."""
+        params: Dict[str, Any] = {}
+        if offset:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        if hours:
+            params["hours"] = hours
+        return params
+
+    @staticmethod
     def _parse_stream(data: Dict[str, Any], stream_id: str) -> StreamContents:
         """Parse a Google Reader stream JSON payload into StreamContents."""
         articles = []
         for item in data.get("items", []):
-            # Convert timestamps
+            # Convert timestamps. Some feeds publish future dates; an article cannot
+            # predate its own fetch, so clamp to FreshRSS's crawl time.
             published = None
+            crawled = int(item["crawlTimeMsec"]) / 1000 if "crawlTimeMsec" in item else None
             if "published" in item:
-                published = datetime.fromtimestamp(item["published"])
-            elif "crawlTimeMsec" in item:
-                published = datetime.fromtimestamp(int(item["crawlTimeMsec"]) / 1000)
+                ts = item["published"]
+                published = datetime.fromtimestamp(min(ts, crawled) if crawled else ts)
+            elif crawled:
+                published = datetime.fromtimestamp(crawled)
             
             article = Article(
                 id=item["id"],

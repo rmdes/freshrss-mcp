@@ -464,9 +464,10 @@ async def freshrss_list_queries() -> Dict[str, Any]:
 class QueryArticlesParams(BaseModel):
     """Parameters for fetching a user query's articles."""
     name: str = Field(..., description="Query name, as listed by freshrss_list_queries")
-    count: int = Field(50, description="Number of articles to fetch")
+    count: int = Field(50, description="Number of articles to fetch (FreshRSS caps each page, 400 by default)")
     offset: int = Field(0, description="Number of articles to skip, for paging")
     search: Optional[str] = Field(None, description="Extra FreshRSS search to narrow the query (ANDed with it)")
+    hours: Optional[int] = Field(None, description="Only articles received in the last N hours, e.g. 720 for 30 days")
 
 
 @mcp.tool()
@@ -479,23 +480,31 @@ async def freshrss_get_query_articles(params: QueryArticlesParams) -> Dict[str, 
     urls = query_urls()
     try:
         client = await ensure_authenticated()
-        if params.name in urls:
-            stream = await client.get_query_contents(
-                urls[params.name], count=params.count, offset=params.offset, search=params.search
+
+        async def fetch(count: int, offset: int):
+            if params.name in urls:
+                return await client.get_query_contents(
+                    urls[params.name], count=count, offset=offset, search=params.search, hours=params.hours
+                )
+            return await client.get_user_query_contents(
+                params.name, count=count, offset=offset, search=params.search, hours=params.hours
             )
-        else:
-            stream = await client.get_user_query_contents(
-                params.name, count=params.count, offset=params.offset, search=params.search
-            )
+
+        stream = await fetch(params.count, params.offset)
         articles = [article_dict(article) for article in stream.items]
+        next_offset = params.offset + len(articles)
+        # No continuation token on this endpoint. A short page is either the end or FreshRSS's
+        # per-response cap (max_posts_per_rss, 400 by default), so probe one item ahead.
+        has_more = len(articles) == params.count
+        if 0 < len(articles) < params.count:
+            has_more = bool((await fetch(1, next_offset)).items)
         return {
             "success": True,
             "query": stream.title or params.name,
             "articles": articles,
             "count": len(articles),
-            # No continuation token on this endpoint: a full page means there may be more.
-            "has_more": len(articles) == params.count,
-            "next_offset": params.offset + len(articles),
+            "has_more": has_more,
+            "next_offset": next_offset,
         }
     except Exception as e:
         logger.error(f"Failed to get query articles: {e}")

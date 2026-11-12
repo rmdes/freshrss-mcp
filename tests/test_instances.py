@@ -104,23 +104,33 @@ async def test_queries_merge_into_env_instance(isolated, monkeypatch):
     assert [(q["name"], q["source"]) for q in listed["queries"]] == [("Libres", "share_url"), ("Bots", "extension")]
     assert listed["queries"][1]["filter"] == "News" and "extension_error" not in listed
 
-    items = {"title": "q", "items": [
-        {"id": "tag:google.com,2005:reader/item/1", "title": "a", "published": 1},
-        {"id": "tag:google.com,2005:reader/item/2", "title": "b", "published": 2},
-    ]}
+    # A server holding 5 articles that caps each response at 2 (like max_posts_per_rss).
+    store = [{"id": f"tag:google.com,2005:reader/item/{n}", "title": str(n), "published": n} for n in range(5)]
     calls = []
 
-    async def fake_share(self, url, count=50, offset=0, search=None):
-        calls.append(("share", url))
-        return FreshRSSClient._parse_stream(items, url)
+    def page(count, offset):
+        return {"title": "q", "items": store[offset:offset + min(count, 2)]}
 
-    async def fake_ext(self, name, count=50, offset=0, search=None):
-        calls.append(("extension", name))
-        return FreshRSSClient._parse_stream(items, name)
+    async def fake_share(self, url, count=50, offset=0, search=None, hours=None):
+        calls.append(("share", url, count, offset, hours))
+        return FreshRSSClient._parse_stream(page(count, offset), url)
+
+    async def fake_ext(self, name, count=50, offset=0, search=None, hours=None):
+        calls.append(("extension", name, count, offset, hours))
+        return FreshRSSClient._parse_stream(page(count, offset), name)
 
     monkeypatch.setattr(FreshRSSClient, "get_query_contents", fake_share)
     monkeypatch.setattr(FreshRSSClient, "get_user_query_contents", fake_ext)
     res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Libres", count=2))
     assert res["success"] and res["count"] == 2 and res["has_more"] and res["next_offset"] == 2
-    await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Bots"))
-    assert calls == [("share", "https://env.example/api/query.php?t=X"), ("extension", "Bots")]
+    assert calls == [("share", "https://env.example/api/query.php?t=X", 2, 0, None)]
+
+    # Asked for 50, got 2 because of the cap: must still report more, via a 1-item probe.
+    calls.clear()
+    res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Bots", hours=720))
+    assert res["count"] == 2 and res["has_more"] and res["next_offset"] == 2
+    assert calls == [("extension", "Bots", 50, 0, 720), ("extension", "Bots", 1, 2, 720)]
+
+    # Last page: short and nothing after it.
+    res = await server.freshrss_get_query_articles(server.QueryArticlesParams(name="Bots", offset=4))
+    assert res["count"] == 1 and not res["has_more"] and res["next_offset"] == 5

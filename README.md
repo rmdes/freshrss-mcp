@@ -209,9 +209,13 @@ configured share URLs. If the extension is missing, `extension_error` says why.
 
 #### `freshrss_get_query_articles`
 Fetch a query's articles. Pages by `offset` (the endpoint has no continuation token); `search`
-narrows the query with FreshRSS search syntax, ANDed with the query's own filter.
+narrows the query with FreshRSS search syntax, ANDed with the query's own filter; `hours` keeps only
+articles received in the last N hours. FreshRSS returns at most `max_posts_per_rss` items per call
+(400 by default) whatever `count` is: keep calling with `next_offset` while `has_more` is true.
+Published dates later than the moment FreshRSS fetched the article are clamped to that fetch time.
 ```python
 freshrss_get_query_articles({"name": "MediasLibres", "count": 20, "offset": 20, "search": "intitle:police"})
+freshrss_get_query_articles({"name": "MediasLibres", "count": 400, "hours": 720})  # last 30 days, page 1
 ```
 
 #### `freshrss_create_query` / `freshrss_update_query` / `freshrss_delete_query`
